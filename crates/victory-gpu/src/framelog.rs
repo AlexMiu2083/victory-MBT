@@ -111,6 +111,11 @@ pub fn add(t: T, n: u64) {
     TOTAL[t as usize].fetch_add(n, Relaxed);
 }
 
+/// A total so far (for the caption's meter, `crate::host`).
+pub fn total(t: T) -> u64 {
+    TOTAL[t as usize].load(Relaxed)
+}
+
 /// Takes from a total (a time that was summed over threads is corrected
 /// to the time it took).
 pub fn sub(t: T, n: u64) {

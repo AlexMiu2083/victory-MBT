@@ -7631,6 +7631,40 @@ struct Meter {
     logged: std::time::Instant,
     /// The caption the window had, once read.
     caption: Option<Vec<u16>>,
+    /// The frame log's totals at the last caption, for its meter: the
+    /// title's present calls, our preparing of submissions, the card idle,
+    /// and of that the card idle behind us (microseconds).
+    stat: [u64; 4],
+}
+
+/// The frame log's totals the caption's meter reads ([`Meter::stat`]).
+fn stat_totals() -> [u64; 4] {
+    use crate::framelog::{T, total};
+    [total(T::PresentUs), total(T::PrepareUs), total(T::CardIdleUs), total(T::CardIdleBehindUs)]
+}
+
+/// The caption's meter, after Unreal's `stat unit`: of `ms` a frame, the
+/// game's (its render thread outside its present call, where it makes the
+/// frame), the layer's (preparing the game's submissions for the card) and
+/// the card's (busy), and which of them the frame waits for: the card when
+/// it is busy 90 % of the frame or more, else whichever the card stood
+/// idle for (the game had not submitted, or we were still preparing).
+/// `per` is the frame log's totals over the second, per frame
+/// ([`stat_totals`]).
+fn stat_unit(ms: f64, per: [f64; 4]) -> String {
+    let [present, prepare, idle, behind] = per.map(|us| us / 1000.0);
+    let game = (ms - present).clamp(0.0, ms);
+    let gpu = (ms - idle).clamp(0.0, ms);
+    let busy = if ms > 0.0 { 100.0 * gpu / ms } else { 0.0 };
+    let waiting_for_game = (idle - behind).max(0.0);
+    let bound = if busy >= 90.0 {
+        "GPU"
+    } else if waiting_for_game >= behind {
+        "Game"
+    } else {
+        "Layer"
+    };
+    format!("Frame {ms:.0} ms | Game {game:.0} | Layer {prepare:.0} | GPU {gpu:.0} ({busy:.0}%) | bound: {bound}")
 }
 
 impl Meter {
@@ -7644,6 +7678,7 @@ impl Meter {
             drawn: crate::draw::drawn(),
             logged: now,
             caption: None,
+            stat: stat_totals(),
         }
     }
 
@@ -7897,7 +7932,13 @@ impl Meter {
             self.caption = Some(buffer);
         }
         let Some(caption) = &self.caption else { return };
-        let text = format!(" | VIctory {fps:.0} fps {ms:.1} ms/frame {draws:.0} draws/frame");
+        let stat = {
+            let now = stat_totals();
+            let per = std::array::from_fn(|i| now[i].saturating_sub(self.stat[i]) as f64 / frames);
+            self.stat = now;
+            stat_unit(ms, per)
+        };
+        let text = format!(" | VIctory {fps:.1} fps | {stat} | {draws:.0} draws");
         let mut text: Vec<u16> = caption.iter().copied().chain(text.encode_utf16()).collect();
         text.push(0);
         // Setting the text waits for the window's thread (a title thread,
@@ -9006,5 +9047,24 @@ void main() {
             }
         }
         drop((a, b, trial));
+    }
+}
+
+#[cfg(test)]
+mod stat_unit_tests {
+    use super::stat_unit;
+
+    /// The caption's meter names the side the frame waits for.
+    #[test]
+    fn the_meter_names_what_the_frame_waits_for() {
+        // 200 ms frames, the card idle 10 ms: busy 95 %, GPU bound.
+        let line = stat_unit(200.0, [100_000.0, 80_000.0, 10_000.0, 5_000.0]);
+        assert!(line.contains("GPU 190 (95%)") && line.ends_with("bound: GPU"), "{line}");
+        // Idle 100 ms, 80 of them while the game had not submitted.
+        let line = stat_unit(200.0, [50_000.0, 30_000.0, 100_000.0, 20_000.0]);
+        assert!(line.contains("Game 150") && line.ends_with("bound: Game"), "{line}");
+        // Idle 100 ms, 70 of them behind our preparing.
+        let line = stat_unit(200.0, [50_000.0, 120_000.0, 100_000.0, 70_000.0]);
+        assert!(line.contains("Layer 120") && line.ends_with("bound: Layer"), "{line}");
     }
 }
