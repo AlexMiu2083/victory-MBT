@@ -181,13 +181,17 @@ const WINDOW_MOST: u64 = 64;
 /// (`crate::indirect::bound_ahead`); a tail record that looks real is
 /// charged what it asks, a few thousand of 2^27. And arguments the title's CPU side changes are seen as
 /// before, at the next submission.
-// On by default since 2026-11-25 (`VICTORY_INDIRECT_WINDOW=0` turns it
-// off): with the other frame-rate switches on, the first gameplay scene
-// went from a median of 266 to 205 ms a frame on an RTX 4070, no device
-// loss. Do not combine with `VICTORY_CARD_FETCH_INFLIGHT=1` (README).
+/// On by default since 2026-11-25 (`VICTORY_INDIRECT_WINDOW=0` turns it
+/// off): with the other frame-rate switches on, the first gameplay scene
+/// went from a median of 266 to 205 ms a frame on an RTX 4070, no device
+/// loss. Do not combine with `VICTORY_CARD_FETCH_INFLIGHT=1` (README).
+///
+/// Off for the rest of the run from the first error the card's driver
+/// reports to the system (`crate::drvwatch`): every loss of the card in a
+/// run with windows was announced that way seconds ahead.
 fn windows() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VICTORY_INDIRECT_WINDOW").is_none_or(|v| v != "0"))
+    *ON.get_or_init(|| std::env::var_os("VICTORY_INDIRECT_WINDOW").is_none_or(|v| v != "0")) && !crate::drvwatch::tripped()
 }
 
 /// What one title list has set, and what its host list was last given.
@@ -2053,6 +2057,12 @@ impl State {
             crate::pipeline::note_drop(self.pipeline as This);
             return;
         }
+        // A program that walks ray-tracing structures nothing has built.
+        if crate::pipeline::walk_held(self.pipeline as This) {
+            #[cfg(feature = "diagnostics")]
+            crate::pipeline::note_why("a walk of ray-tracing structures that are not built (VICTORY_BVH_HOLD=1)".to_owned());
+            return;
+        }
         // The ray-tracing structure builder's stages run all or none.
         if crate::pipeline::is_builder(self.pipeline as This) && !crate::pipeline::builder_runs() {
             DROPPED.fetch_add(1, Ordering::Relaxed);
@@ -2924,6 +2934,13 @@ impl State {
             return false;
         }
         if crate::pipeline::is_builder(self.pipeline as This) && !crate::pipeline::builder_runs() {
+            return false;
+        }
+        // A program that walks ray-tracing structures nothing has built:
+        // dropped before the argument clamp, like a skipped one.
+        if crate::pipeline::walk_held(self.pipeline as This) {
+            #[cfg(feature = "diagnostics")]
+            crate::pipeline::note_why("a walk of ray-tracing structures that are not built (VICTORY_BVH_HOLD=1)".to_owned());
             return false;
         }
         const DRAW: u32 = 0;
